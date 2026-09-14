@@ -3,11 +3,11 @@ use std::ffi::CString;
 use windows::{Win32::System::LibraryLoader::GetModuleHandleA, core::PSTR};
 
 pub fn get_module_base(name: Option<&str>) -> usize {
+    let name = name.map(|value| CString::new(value).unwrap());
     unsafe {
-        GetModuleHandleA(match name {
+        GetModuleHandleA(match &name {
             Some(name) => {
-                let c_name = CString::new(name).unwrap().to_bytes_with_nul().as_ptr();
-                PSTR::from_raw(c_name as *mut _)
+                PSTR::from_raw(name.as_ptr() as *mut _)
             }
             None => PSTR::null(),
         })

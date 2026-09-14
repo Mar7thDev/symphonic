@@ -12,6 +12,7 @@ use windows::{
 };
 
 use crate::{bin_util::BufExtensions, nt_util};
+use crate::logging;
 
 pub fn restore_executable_from_dump(mut dump: &[u8]) {
     restore_sections(&mut dump);
@@ -26,20 +27,23 @@ fn restore_entry_point(dump: &mut &[u8]) {
 
     let real_entry_point = dump.read_u32() as usize;
     let fake_entry_point = nt_util::get_executable_entry_point_offset(base);
+    logging::write(format_args!("entry redirect base={base:#x} fake={fake_entry_point:#x} real={real_entry_point:#x}"));
 
-    let jmp_diff = (0x100000000 - (fake_entry_point - real_entry_point + 5)) as u32;
+    let jmp_diff = i32::try_from(real_entry_point as i64 - fake_entry_point as i64 - 5)
+        .expect("entry point redirect exceeds rel32 range");
 
     unsafe {
         let ptr = (base + fake_entry_point) as *const c_void;
         let mut prot = PAGE_EXECUTE_READWRITE;
 
         VirtualProtect(ptr, 5, prot, &mut prot).unwrap();
-
         *(ptr as *mut u8) = 0xE9; // JMP
         std::slice::from_raw_parts_mut((base + fake_entry_point + 1) as *mut u8, 4)
             .copy_from_slice(&jmp_diff.to_le_bytes());
 
         VirtualProtect(ptr, 5, prot, &mut prot).unwrap();
+        windows::Win32::System::Diagnostics::Debug::FlushInstructionCache(
+            windows::Win32::System::Threading::GetCurrentProcess(), Some(ptr), 5).unwrap();
     }
 }
 
@@ -62,18 +66,18 @@ fn restore_imports(dump: &mut &[u8]) {
     let base = nt_util::get_module_base(None);
 
     let module_count = dump.read_u16();
-    println!("modules to import: {module_count}");
+    crate::trace!("modules to import: {module_count}");
 
     for _ in 0..module_count {
         let module_name = dump.read_string();
         let import_count = dump.read_u16();
 
-        println!("{module_name}: {import_count} symbols to import");
+        crate::trace!("{module_name}: {import_count} symbols to import");
 
         let module = unsafe {
             let name = CString::new(module_name.clone()).unwrap();
             LoadLibraryA(PSTR(name.as_bytes_with_nul().as_ptr() as *mut _)).unwrap_or_else(|err| {
-                println!("failed to load library: {err}");
+                crate::trace!("failed to load library: {err}");
                 hang!();
             })
         };
@@ -82,7 +86,7 @@ fn restore_imports(dump: &mut &[u8]) {
             let symbol_name = dump.read_string();
             let symbol_offset = dump.read_u32() as usize;
 
-            println!("named import: {module_name}::{symbol_name} to 0x{symbol_offset:X}");
+            crate::trace!("named import: {module_name}::{symbol_name} to 0x{symbol_offset:X}");
 
             let proc_address = unsafe {
                 let c_name = CString::new(symbol_name.clone()).unwrap();
@@ -93,7 +97,7 @@ fn restore_imports(dump: &mut &[u8]) {
                 } else if let Some(&(module, symbol)) = fallback_imports.get(&*symbol_name) {
                     GetProcAddress(GetModuleHandleA(module).unwrap(), symbol).unwrap()
                 } else {
-                    println!("import failed");
+                    crate::trace!("import failed");
                     hang!();
                 }
             } as usize;
@@ -112,7 +116,7 @@ fn restore_imports(dump: &mut &[u8]) {
 
 fn restore_sections(dump: &mut &[u8]) {
     let section_count = dump.read_u16();
-    println!("sections in dump: {section_count}");
+    crate::trace!("sections in dump: {section_count}");
 
     for _ in 0..section_count {
         let offset = dump.read_u32() as usize;
@@ -125,7 +129,7 @@ fn restore_sections(dump: &mut &[u8]) {
 }
 
 fn restore_section(offset: usize, payload: &[u8]) {
-    println!(
+    crate::trace!(
         "restoring section at offset 0x{offset:X} of size 0x{size:X}",
         size = payload.len()
     );
@@ -139,6 +143,8 @@ fn restore_section(offset: usize, payload: &[u8]) {
         VirtualProtect(ptr, payload.len(), prot, &mut prot).unwrap();
         std::slice::from_raw_parts_mut(ptr as *mut u8, payload.len()).copy_from_slice(payload);
         VirtualProtect(ptr, payload.len(), prot, &mut prot).unwrap();
+        windows::Win32::System::Diagnostics::Debug::FlushInstructionCache(
+            windows::Win32::System::Threading::GetCurrentProcess(), Some(ptr), payload.len()).unwrap();
     }
 }
 

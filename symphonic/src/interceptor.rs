@@ -36,7 +36,7 @@ impl Interceptor {
             if let Ok(hook_point) = hooker.hook() {
                 self.active_hooks.push(hook_point);
             } else {
-                eprintln!("failed to attach to 0x{address:X}");
+                panic!("failed to install hook at 0x{address:X}");
             }
         }
     }
@@ -54,7 +54,7 @@ impl Interceptor {
             if let Ok(hook_point) = hooker.hook() {
                 self.active_hooks.push(hook_point);
             } else {
-                eprintln!("failed to attach to 0x{address:X}");
+                panic!("failed to install hook at 0x{address:X}");
             }
         }
     }
